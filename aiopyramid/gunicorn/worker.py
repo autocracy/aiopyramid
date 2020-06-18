@@ -1,6 +1,6 @@
 import asyncio
 
-from aiohttp_wsgi.wsgi import WSGIHandler, ReadBuffer
+from aiohttp_wsgi.wsgi import WSGIHandler
 from aiohttp.worker import GunicornWebWorker
 from aiohttp.web import Application, Response, HTTPRequestEntityTooLarge
 
@@ -67,20 +67,17 @@ class AiopyramidWSGIHandler(WSGIHandler):
                 request.content_length > self._max_request_body_size):
             raise HTTPRequestEntityTooLarge()
         # Buffer the body.
-        body_buffer = ReadBuffer(
-            self._inbuf_overflow,
-            self._max_request_body_size,
-            self._loop,
-            self._executor)
-
-        try:
+        content_length = 0
+        with SpooledTemporaryFile(max_size=self._inbuf_overflow) as body:
             while True:
                 block = yield from request.content.readany()
                 if not block:
                     break
-                yield from body_buffer.write(block)
-            # Seek the body.
-            body, content_length = yield from body_buffer.get_body()
+                content_length += len(block)
+                if content_length > self._max_request_body_size:
+                    raise HTTPRequestEntityTooLarge()
+                body.write(block)
+            body.seek(0)
             # Get the environ.
             environ = self._get_environ(request, body, content_length)
             environ['async.writer'] = request.writer
@@ -97,10 +94,6 @@ class AiopyramidWSGIHandler(WSGIHandler):
                 headers=headers,
                 body=body,
             )
-
-        finally:
-            yield from body_buffer.close()
-
 
 class AsyncGunicornWorker(GunicornWebWorker):
 
